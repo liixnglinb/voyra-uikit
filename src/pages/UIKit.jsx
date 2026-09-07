@@ -1,0 +1,1039 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { Check, ChevronDown, Copy, Home } from 'lucide-react';
+import { UI_CATS, UI_COMPONENTS } from '../data/uikit-components';
+
+/* ============================================================
+   UI 组件图鉴 · 开发者查阅工具页
+   - 页面自身即 01 号组件的活演示：顶部通栏导航，滚动后变形为悬浮胶囊吸顶
+   - 40 个组件 × 6 分类，每张卡片：中文名 / 英文专业名 / 外观 / 场景 / 原理
+   - 卡片默认展开、两列排布，每张卡可一键复制"喂给 AI 的同款风格提示词"
+   - 性能：视口外的动效演示自动暂停 + content-visibility 跳过屏外渲染
+   ============================================================ */
+
+function copyText(value) {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+  return new Promise((resolve, reject) => {
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try { document.execCommand('copy') ? resolve() : reject(new Error('copy failed')); }
+    catch (error) { reject(error); }
+    finally { textarea.remove(); }
+  });
+}
+
+/* 组装"让 AI 生成同款风格组件"的提示词 */
+function buildPrompt(c) {
+  const catLabel = UI_CATS.find((x) => x.key === c.cat)?.label || c.cat;
+  return [
+    `请实现一个「${c.name}（${c.en}）」网页界面组件，分类：${catLabel}。`,
+    '视觉风格：黑白灰极简 + 金色点缀（主金 #a48830、高亮 #ffe08a），白底细网格纹理，卡片圆角 14px、1px 浅灰描边、柔和低扩散阴影。',
+    `外观描述：${c.look}`,
+    `使用场景：${c.scene}`,
+    `实现原理：${c.how}`,
+    '要求：附带一个约 3 秒的循环演示动效；输出 React + CSS 实现，交互与细节尽量贴近上述描述。',
+  ].join('\n');
+}
+
+export default function UIKit() {
+  const [shrunk, setShrunk] = useState(false);
+  const [closedIds, setClosedIds] = useState(() => new Set());
+  const [cat, setCat] = useState('all');
+  const [copiedNo, setCopiedNo] = useState(null);
+  const rootRef = useRef(null);
+  const copyTimerRef = useRef(null);
+
+  /* 导航收缩判断：用页面根元素的视口位置而非探测滚动容器，
+     捕获阶段监听可覆盖任何层级的内层滚动容器（Layout 包装结构差异不影响） */
+  useEffect(() => {
+    const onScroll = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      setShrunk(rect ? rect.top < -90 : false);
+    };
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => {
+      document.removeEventListener('scroll', onScroll, { capture: true });
+      window.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  /* 性能优化：视口外的动效演示全部暂停（40 个演示同时跑布局型动画会卡顿）。
+     用 data-inview 而不是 class，避免 React 重渲染 className 时把标记冲掉 */
+  useEffect(() => {
+    const targets = rootRef.current?.querySelectorAll('.ui-card, .ui-hero-show');
+    if (!targets || !targets.length || !('IntersectionObserver' in window)) return undefined;
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) entry.target.setAttribute('data-inview', '1');
+        else entry.target.removeAttribute('data-inview');
+      });
+    }, { rootMargin: '160px 0px' });
+    targets.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [cat]);
+
+  useEffect(() => () => clearTimeout(copyTimerRef.current), []);
+
+  /* 卡片默认全部展开，点击可单卡收起/展开 */
+  const toggle = (no) => setClosedIds((cur) => {
+    const next = new Set(cur);
+    if (next.has(no)) next.delete(no); else next.add(no);
+    return next;
+  });
+
+  const jump = (catKey) => {
+    setCat(catKey);
+    window.setTimeout(() => document.querySelector('.ui-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+  };
+
+  const copyPrompt = async (c) => {
+    try {
+      await copyText(buildPrompt(c));
+      setCopiedNo(c.no);
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopiedNo(null), 1600);
+    } catch { /* ignore */ }
+  };
+
+  const shown = cat === 'all' ? UI_COMPONENTS : UI_COMPONENTS.filter((c) => c.cat === cat);
+
+  return <div className="uikit-page" ref={rootRef}>
+    <style>{`
+      .uikit-page { min-height:100vh; color:#1b1b1b; background:#fff;
+        background-image:linear-gradient(rgba(0,0,0,.031) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,.031) 1px,transparent 1px);
+        background-size:32px 32px;
+        font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+      .uikit-page * { box-sizing:border-box; }
+      .uikit-page button { cursor:pointer; font:inherit; }
+      .uikit-page button:focus-visible, .uikit-page a:focus-visible { outline:2px solid #1b1b1b; outline-offset:3px; }
+
+      /* ===== 变形胶囊导航 ===== */
+      .ui-nav { position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:60;
+        display:flex; align-items:center; justify-content:space-between; gap:24px;
+        width:min(100% - 48px, 1160px); padding:15px 24px;
+        border:1px solid rgba(27,27,27,.07); border-radius:16px; background:rgba(255,255,255,.4);
+        transition:width .5s cubic-bezier(.16,1,.3,1), padding .5s cubic-bezier(.16,1,.3,1), top .5s cubic-bezier(.16,1,.3,1), border-radius .5s cubic-bezier(.16,1,.3,1), background .4s ease, box-shadow .4s ease, border-color .4s ease; }
+      .ui-nav.is-shrunk { top:12px; width:min(100% - 40px, 680px); padding:9px 20px;
+        border:1px solid rgba(27,27,27,.1); border-radius:999px; background:rgba(255,255,255,.85);
+        backdrop-filter:blur(14px) saturate(140%); -webkit-backdrop-filter:blur(14px) saturate(140%);
+        box-shadow:0 14px 34px -18px rgba(20,20,20,.4); }
+      .ui-nav-logo { display:inline-flex; align-items:center; gap:8px; color:#1b1b1b; font-weight:760; font-size:14.5px; text-decoration:none; white-space:nowrap; }
+      .ui-nav-logo i { width:9px; height:9px; flex:0 0 auto; border:1.5px solid #a48830; border-radius:50%; }
+      .ui-nav-logo em { font-style:normal; color:#999; font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.06em; transition:opacity .3s ease; }
+      .ui-nav.is-shrunk .ui-nav-logo em { opacity:0; width:0; overflow:hidden; }
+      .ui-nav-links { display:inline-flex; align-items:center; gap:4px; }
+      .ui-nav-links button, .ui-nav-home { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:8px; padding:7px 11px; background:transparent; color:#666; font-size:12.5px; font-weight:600; text-decoration:none; white-space:nowrap; transition:background .18s ease, color .18s ease; }
+      .ui-nav-links button:hover, .ui-nav-home:hover { background:#ffe08a; color:#1b1b1b; }
+      .ui-nav-links button { transition:background .18s ease, color .18s ease, opacity .35s ease, max-width .45s cubic-bezier(.16,1,.3,1), padding .45s cubic-bezier(.16,1,.3,1); }
+      .ui-nav.is-shrunk .ui-nav-links button { max-width:0; opacity:0; padding:7px 0; overflow:hidden; }
+      .ui-nav.is-shrunk .ui-nav-home { background:transparent; }
+      .ui-nav.is-shrunk .ui-nav-home:hover { background:#ffe08a; }
+
+      /* ===== Hero（左文案 + 右侧实时演示窗，填充右侧留白） ===== */
+      .ui-hero { width:min(100% - 48px, 1160px); margin:0 auto; padding:150px 0 44px;
+        display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:56px; align-items:center; text-align:left; }
+      .ui-hero-kicker { color:#a0a0a0; font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.14em; }
+      .ui-hero h1 { margin:18px 0 0; font-size:clamp(52px, 7.2vw, 88px); font-weight:800; line-height:.98; letter-spacing:-.02em; }
+      .ui-hero h1 span { color:transparent; -webkit-text-stroke:2px #1b1b1b; text-shadow:6px 6px 0 rgba(255,224,138,.45); }
+      .ui-hero p { max-width:560px; margin:24px 0 0; color:#5c5c5c; font-size:15px; line-height:1.9; }
+      .ui-hero-stats { display:flex; flex-wrap:wrap; gap:10px 26px; margin-top:28px; color:#666; font:12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+      .ui-hero-stats b { color:#1b1b1b; font-size:15px; font-weight:750; margin-right:6px; }
+      .ui-hero-cue { display:inline-flex; align-items:center; gap:7px; margin-top:26px; color:#999; font-size:12.5px; animation:ui-cue 1.8s ease-in-out infinite; }
+      @keyframes ui-cue { 50% { transform:translateY(5px); } }
+      .ui-hero-show { min-width:0; }
+      .ui-hero-show-frame { border:1px solid rgba(27,27,27,.12); border-radius:16px; background:rgba(255,255,255,.92);
+        box-shadow:0 34px 64px -44px rgba(20,20,20,.5); padding:13px; display:grid; gap:9px; }
+      .ui-hero-show-head { display:flex; align-items:center; gap:5px; padding:0 2px 1px; }
+      .ui-hero-show-head i { width:8px; height:8px; border-radius:50%; background:#e2e2e2; }
+      .ui-hero-show-head i:first-child { background:#f0c9c9; }
+      .ui-hero-show-head span { margin-left:auto; color:#b5b5b5; font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; }
+      .ui-hero-show-cap { margin:2px 2px 0; color:#a0a0a0; font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; text-align:center; }
+
+      /* ===== 分类筛选（吸顶时避让上方悬浮胶囊导航） ===== */
+      .ui-cats { position:sticky; top:62px; z-index:40; width:min(100% - 48px, 1160px); margin:0 auto;
+        display:flex; align-items:center; gap:6px; padding:10px 0 12px; overflow-x:auto; scrollbar-width:none;
+        background:linear-gradient(180deg, rgba(255,255,255,.98) 72%, transparent); }
+      .ui-cats::-webkit-scrollbar { display:none; }
+      .ui-cat { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; border:1px solid rgba(27,27,27,.13); border-radius:99px; padding:8px 15px; background:#fff; color:#666; font-size:12.5px; font-weight:650; transition:all .18s ease; }
+      .ui-cat b { color:#b5b5b5; font:600 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+      .ui-cat:hover { border-color:rgba(27,27,27,.3); color:#1b1b1b; }
+      .ui-cat.is-active { border-color:#d7b846; background:#ffe08a; color:#1b1b1b; }
+      .ui-cat.is-active b { color:rgba(27,27,27,.5); }
+
+      /* ===== 卡片列表（两列网格 · 默认展开 · 统一尺寸 · 视口外暂停动效） ===== */
+      .ui-list { width:min(100% - 48px, 1160px); margin:0 auto; padding:16px 0 90px; display:grid;
+        grid-template-columns:repeat(2, minmax(0,1fr)); gap:18px; }
+      .ui-card { position:relative; border:1px solid rgba(27,27,27,.12); border-radius:14px; background:rgba(255,255,255,.92);
+        padding:18px 20px 16px; cursor:pointer; overflow:hidden;
+        min-height:483px; content-visibility:auto; contain-intrinsic-size:auto 483px;
+        transition:border-color .22s ease, box-shadow .22s ease, transform .22s cubic-bezier(.16,1,.3,1); }
+      .ui-card:hover { border-color:rgba(164,136,48,.5); box-shadow:0 16px 32px -26px rgba(0,0,0,.4); transform:translateY(-2px); }
+      .ui-card.is-open { cursor:default; }
+      .ui-card.is-open:hover { border-color:rgba(164,136,48,.65); }
+      /* 视口外：动效全部冻结（data-inview 由 IntersectionObserver 维护） */
+      .ui-card:not([data-inview]) :is(.ui-demo, .ui-demo *),
+      .ui-hero-show:not([data-inview]) :is(.ui-demo, .ui-demo *) { animation-play-state:paused !important; }
+      .ui-card-top { display:flex; align-items:center; gap:12px; }
+      .ui-no { flex:0 0 auto; color:transparent; -webkit-text-stroke:1px rgba(164,136,48,.55); font:800 24px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+      .ui-card-name { display:grid; gap:3px; min-width:0; }
+      .ui-card-name h3 { margin:0; font-size:17px; font-weight:760; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .ui-card-name em { color:#a48830; font:650 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace; font-style:normal; }
+      .ui-copy { display:inline-flex; align-items:center; gap:5px; flex:0 0 auto; margin-left:auto;
+        border:1px solid rgba(164,136,48,.45); border-radius:99px; padding:5px 10px; background:#fff9df; color:#8a6d1c;
+        font-size:11px; font-weight:650; white-space:nowrap;
+        transition:background .2s ease, color .2s ease, border-color .2s ease, transform .2s ease; }
+      .ui-copy:hover { background:#ffe08a; transform:translateY(-1px); }
+      .ui-copy:active { transform:scale(.95); transition-duration:.08s; }
+      .ui-copy.is-copied { background:#3a8a4d; border-color:#3a8a4d; color:#fff; }
+      .ui-card-cat { flex:0 0 auto; padding:4px 11px; border:1px solid rgba(27,27,27,.12); border-radius:99px; color:#888; font-size:11px; font-weight:600; }
+      .ui-chevron { flex:0 0 auto; color:#999; transition:transform .35s cubic-bezier(.16,1,.3,1), color .35s ease; }
+      .ui-card:not(.is-open) .ui-chevron { transform:rotate(-90deg); }
+      .ui-card.is-open .ui-chevron { color:#a48830; }
+      .ui-look { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden;
+        margin:12px 0 0; color:#5c5c5c; font-size:13px; line-height:1.85; }
+      .ui-detail { display:grid; grid-template-rows:1fr; transition:grid-template-rows .5s cubic-bezier(.16,1,.3,1); }
+      .ui-card:not(.is-open) .ui-detail { grid-template-rows:0fr; }
+      .ui-detail-inner { overflow:hidden; }
+      .ui-detail-body { display:grid; grid-template-columns:1fr; gap:12px; padding-top:14px; }
+      .ui-demo { height:150px; display:flex; flex-direction:column; justify-content:center;
+        border:1px solid rgba(27,27,27,.1); border-radius:11px; background:#fafaf8; padding:14px; overflow:hidden; }
+      .ui-demo p { margin:11px 0 0; color:#a0a0a0; font-size:10.5px; text-align:center; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; flex:0 0 auto; }
+      .ui-fields { display:grid; grid-template-columns:1fr 1fr; gap:12px 18px; align-content:start; }
+      .ui-field h4 { display:flex; align-items:center; gap:7px; margin:0; font-size:12px; font-weight:750; color:#1b1b1b; }
+      .ui-field h4::before { content:""; width:8px; height:8px; border-radius:2px; background:#ffe08a; border:1px solid rgba(164,136,48,.5); }
+      .ui-field p { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden;
+        margin:6px 0 0; color:#5c5c5c; font-size:12.5px; line-height:1.85; }
+
+      /* ===== 迷你演示通用 ===== */
+      .uikit-page .ui-demo p { text-align:center; }
+      .d-browser { border:1px solid #e2e2e2; border-radius:8px; background:#fff; padding:10px; display:grid; gap:8px; }
+      .d-browser i { width:7px; height:7px; border-radius:50%; background:#ddd; display:inline-block; margin-right:4px; }
+      .d-nav-wide { display:flex; align-items:center; justify-content:space-between; border:1px dashed #cfcfcf; border-radius:6px; padding:8px 10px; font-size:10px; color:#777; }
+      .d-nav-wide b { font-size:10px; color:#1b1b1b; }
+      .d-nav-morph { margin:0 auto; display:flex; align-items:center; justify-content:space-between; font-size:10px; color:#8a6d1c;
+        border:1px dashed #cfcfcf; border-radius:6px; padding:8px 10px; width:100%; background:#fff;
+        animation:dk-morph 3.2s cubic-bezier(.16,1,.3,1) infinite; }
+      .d-nav-morph b { font-size:10px; color:#1b1b1b; }
+      @keyframes dk-morph {
+        0%, 38% { width:100%; border-radius:6px; border-style:dashed; border-color:#cfcfcf; background:#fff; box-shadow:none; padding:8px 10px; color:#777; }
+        55%, 88% { width:72%; border-radius:99px; border-style:solid; border-color:rgba(164,136,48,.5); background:#fff9df; box-shadow:0 4px 12px -6px rgba(164,136,48,.6); padding:8px 14px; color:#8a6d1c; }
+        100% { width:100%; border-radius:6px; border-style:dashed; border-color:#cfcfcf; background:#fff; box-shadow:none; padding:8px 10px; color:#777; }
+      }
+      .d-tabs { display:flex; gap:6px; }
+      .d-tab { flex:1; min-width:0; display:inline-flex; align-items:center; gap:5px; padding:7px 8px; border:1px solid #e2e2e2; border-radius:7px; background:#f4f4f2; font-size:9px; color:#666; white-space:nowrap; overflow:hidden; }
+      .d-tab.is-on { background:#fff; color:#1b1b1b; font-weight:650; border-bottom:2px solid #d4a930; }
+      .d-fav { display:grid; place-items:center; width:14px; height:14px; flex:0 0 14px; border-radius:4px; background:#1b1b1b; color:#ffe08a; font:800 8px/1 sans-serif; font-style:normal; }
+      .d-fav2 { background:#24292e; color:#fff; }
+      .d-fav3 { background:#3b5bff; color:#fff; }
+      .d-tab1 { animation:dk-tab 3s infinite; }
+      .d-tab2 { animation:dk-tab 3s 1s infinite; }
+      .d-tab3 { animation:dk-tab 3s 2s infinite; }
+      @keyframes dk-tab { 0%, 30% { background:#f4f4f2; color:#666; border-bottom-width:1px; border-bottom-color:#e2e2e2; } 38%, 92% { background:#fff; color:#1b1b1b; font-weight:650; border-bottom-width:2px; border-bottom-color:#d4a930; } 100% { background:#f4f4f2; color:#666; border-bottom-width:1px; border-bottom-color:#e2e2e2; } }
+      .d-token-head, .d-token-row { display:grid; grid-template-columns:56px 1fr 34px; gap:8px; align-items:center; padding:6px 8px; font-size:10px; }
+      .d-token-head { color:#a0a0a0; border-bottom:1px solid #e8e8e8; }
+      .d-token-row { border-bottom:1px solid #f0f0f0; }
+      .d-token-row b { font-weight:600; color:#333; }
+      .d-token-row code { font:9px/1.4 ui-monospace,monospace; color:#8a6d1c; background:#fff9df; border-radius:4px; padding:2px 6px; }
+      .d-token-row em { color:#a48830; font-style:normal; font-weight:700; }
+      .d-token-copy { animation:dk-copy 2.6s infinite; }
+      @keyframes dk-copy { 0%, 55% { color:#a48830; } 62%, 90% { color:#3a8a4d; } 100% { color:#a48830; } }
+      .d-dash { display:grid; grid-template-columns:1fr 1fr; grid-template-rows:auto auto; gap:7px; }
+      .d-dash .d-kpi { border:1px solid #e5e5e5; border-radius:7px; padding:8px 10px; background:#fff; }
+      .d-dash .d-kpi span { display:block; font-size:8.5px; color:#a0a0a0; }
+      .d-dash .d-kpi b { font-size:15px; color:#1b1b1b; }
+      .d-dash .d-chart { grid-column:1 / -1; display:flex; align-items:flex-end; gap:6px; height:52px; border:1px solid #e5e5e5; border-radius:7px; padding:8px; background:#fff; }
+      .d-dash .d-chart i { flex:1; border-radius:3px 3px 0 0; background:linear-gradient(180deg,#d4a930,#efe3b0); transform-origin:bottom; animation:dk-bar 2.4s ease-in-out infinite; }
+      .d-dash .d-chart i:nth-child(2) { animation-delay:.2s; } .d-dash .d-chart i:nth-child(3) { animation-delay:.4s; }
+      .d-dash .d-chart i:nth-child(4) { animation-delay:.6s; } .d-dash .d-chart i:nth-child(5) { animation-delay:.8s; }
+      @keyframes dk-bar { 0%, 100% { transform:scaleY(.55); } 50% { transform:scaleY(1); } }
+      .d-masonry { columns:3; column-gap:6px; }
+      .d-masonry span { display:block; margin-bottom:6px; border-radius:5px; background:linear-gradient(135deg,#fff3c4,#ffe08a); border:1px solid rgba(164,136,48,.35); break-inside:avoid; }
+      .d-masonry .d-fall { animation:dk-fall 2.8s ease-in infinite; }
+      @keyframes dk-fall { 0% { opacity:0; transform:translateY(-26px); } 18%, 82% { opacity:1; transform:translateY(0); } 100% { opacity:0; transform:translateY(-26px); } }
+      .d-slider { display:grid; grid-template-columns:74px 1fr 30px; align-items:center; gap:8px; margin-bottom:9px; font-size:10px; color:#555; }
+      .d-track { position:relative; height:5px; border-radius:99px; background:#e8e8e4; display:block; }
+      .d-fill { position:absolute; left:0; top:0; height:100%; border-radius:99px; background:#d4a930; display:block; }
+      .d-knob { position:absolute; top:50%; width:12px; height:12px; border-radius:50%; background:#fff; border:2px solid #a48830; transform:translate(-50%,-50%); display:block; }
+      .d-knob-anim { animation:dk-knob 2.6s ease-in-out infinite; }
+      .d-knob-anim2 { animation:dk-knob2 3.4s ease-in-out infinite; }
+      @keyframes dk-knob { 0%, 100% { left:30%; } 50% { left:78%; } }
+      @keyframes dk-knob2 { 0%, 100% { left:82%; } 50% { left:38%; } }
+      .d-slider b { text-align:right; font-weight:700; color:#1b1b1b; }
+      .d-ctx-input { position:relative; border:1px solid #e0e0e0; border-radius:7px; background:#fff; padding:9px 11px; font-size:10px; color:#999; }
+      .d-ctx-input::after { content:"|"; color:#a48830; animation:dk-caret 1s steps(1) infinite; }
+      @keyframes dk-caret { 50% { opacity:0; } }
+      .d-ctx-input em { position:absolute; right:9px; bottom:6px; font:9px/1 ui-monospace,monospace; font-style:normal; color:#a48830; }
+      .d-ctx-bar { height:6px; margin-top:7px; border-radius:99px; background:#eee; overflow:hidden; }
+      .d-ctx-bar i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,#d4a930,#e8c96a); animation:dk-ctx 3s ease-in-out infinite; }
+      @keyframes dk-ctx { 0% { width:8%; } 70% { width:86%; background:linear-gradient(90deg,#e07830,#e8a06a); } 100% { width:8%; } }
+      .d-select { display:flex; align-items:center; justify-content:space-between; border:1px solid #e0e0e0; border-radius:7px; background:#fff; padding:8px 11px; font-size:10.5px; font-weight:650; color:#333; }
+      .d-select i { color:#999; font-style:normal; animation:dk-caret 1.4s steps(1) infinite; }
+      .d-select-panel { border:1px solid rgba(164,136,48,.4); border-radius:7px; background:#fff; box-shadow:0 8px 18px -10px rgba(164,136,48,.4); margin-top:6px; overflow:hidden; transform-origin:top; animation:dk-drop 3s cubic-bezier(.16,1,.3,1) infinite; }
+      .d-select-panel span { display:block; padding:6px 11px; font-size:9.5px; color:#666; }
+      .d-select-panel span.on { background:#fff9df; color:#8a6d1c; font-weight:700; }
+      @keyframes dk-drop { 0%, 30% { opacity:0; transform:scaleY(.6); } 45%, 82% { opacity:1; transform:scaleY(1); } 95%, 100% { opacity:0; transform:scaleY(.6); } }
+      .d-usage { display:flex; align-items:center; gap:12px; }
+      .d-usage-copy b { display:block; font-size:16px; color:#1b1b1b; }
+      .d-usage-copy span { font-size:9px; color:#a0a0a0; }
+      .d-card-demo { border:1px solid #e5e5e5; border-radius:8px; background:#fff; overflow:hidden; animation:dk-card 2.6s ease-in-out infinite; }
+      .d-card-demo .d-card-img { height:44px; background:linear-gradient(135deg,#fff3c4,#ffe08a); }
+      .d-card-demo .d-card-body { padding:8px 10px; font-size:9.5px; color:#666; }
+      .d-card-demo .d-card-body b { display:block; font-size:10.5px; color:#1b1b1b; margin-bottom:2px; }
+      @keyframes dk-card { 0%, 100% { transform:translateY(0); box-shadow:0 1px 2px rgba(0,0,0,.06); } 50% { transform:translateY(-5px); box-shadow:0 12px 22px -12px rgba(0,0,0,.35); } }
+      .d-stat { text-align:left; }
+      .d-stat b { display:inline-block; font-size:24px; font-weight:800; color:#1b1b1b; font-variant-numeric:tabular-nums; }
+      .d-stat .d-nums { display:inline-flex; overflow:hidden; height:24px; vertical-align:bottom; }
+      .d-stat .d-nums i { display:block; line-height:24px; height:24px; font-style:normal; animation:dk-num 2.4s cubic-bezier(.16,1,.3,1) infinite; }
+      @keyframes dk-num { 0%, 12% { transform:translateY(0); } 45%, 78% { transform:translateY(-24px); } 100% { transform:translateY(-48px); } }
+      .d-stat .d-trend { margin-left:6px; font:700 10px/1 ui-monospace,monospace; color:#3a8a4d; }
+      .d-tl { position:relative; padding-left:16px; display:grid; gap:9px; }
+      .d-tl::before { content:""; position:absolute; left:4px; top:6px; bottom:6px; width:1.5px; background:#e2e2e2; }
+      .d-tl-item { position:relative; font-size:9.5px; color:#666; }
+      .d-tl-item::before { content:""; position:absolute; left:-15.5px; top:2px; width:8px; height:8px; border-radius:50%; background:#cfcfcf; border:1.5px solid #fff; box-shadow:0 0 0 1px #e2e2e2; }
+      .d-tl-item.done { color:#1b1b1b; font-weight:650; }
+      .d-tl-item.done::before { background:#d4a930; box-shadow:0 0 0 1px #d4a930; }
+      .d-tl-item.now::before { background:#fff; border-color:#d4a930; box-shadow:0 0 0 2px rgba(212,169,48,.4); animation:dk-pulse 1.6s ease-in-out infinite; }
+      @keyframes dk-pulse { 50% { box-shadow:0 0 0 5px rgba(212,169,48,.15); } }
+      .d-carousel { overflow:hidden; border:1px solid #e5e5e5; border-radius:8px; background:#fff; }
+      .d-carousel-track { display:flex; width:300%; animation:dk-car 4.5s ease-in-out infinite; }
+      .d-carousel-track i { flex:1; height:52px; font-style:normal; display:grid; place-items:center; font-size:10px; color:#8a6d1c; }
+      .d-carousel-track i:nth-child(1) { background:linear-gradient(135deg,#fff3c4,#ffe08a); }
+      .d-carousel-track i:nth-child(2) { background:linear-gradient(135deg,#e8f0ff,#c9dcff); color:#3b5bff; }
+      .d-carousel-track i:nth-child(3) { background:linear-gradient(135deg,#e6f7ef,#c9ecd9); color:#2f9e6e; }
+      @keyframes dk-car { 0%, 28% { transform:translateX(0); } 36%, 61% { transform:translateX(-33.333%); } 69%, 94% { transform:translateX(-66.666%); } 100% { transform:translateX(0); } }
+      .d-empty { display:grid; place-items:center; gap:6px; padding:12px 0 4px; }
+      .d-empty i { width:34px; height:34px; border-radius:10px; border:1.5px dashed #cfcfcf; display:block; animation:dk-float 2.6s ease-in-out infinite; }
+      .d-empty span { font-size:9.5px; color:#a0a0a0; }
+      @keyframes dk-float { 50% { transform:translateY(-4px); } }
+      .d-skel { display:grid; gap:7px; }
+      .d-skel i { display:block; height:10px; border-radius:4px; background:linear-gradient(90deg,#f0f0ee 25%,#fafaf8 50%,#f0f0ee 75%); background-size:200% 100%; animation:sk-shimmer 1.3s infinite; font-style:normal; }
+      .d-skel i:nth-child(2) { width:88%; } .d-skel i:nth-child(3) { width:62%; }
+      @keyframes sk-shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
+      .d-toast { display:flex; justify-content:flex-end; min-height:64px; align-items:flex-start; padding-top:4px; }
+      .d-toast span { display:inline-flex; align-items:center; gap:6px; border:1px solid #e2e2e2; border-radius:8px; background:#fff; box-shadow:0 8px 20px -10px rgba(0,0,0,.3); padding:7px 12px; font-size:10px; color:#333; animation:dk-toast 3s cubic-bezier(.16,1,.3,1) infinite; }
+      .d-toast span::before { content:"✓"; color:#3a8a4d; font-weight:800; }
+      @keyframes dk-toast { 0% { opacity:0; transform:translateY(-14px); } 12%, 78% { opacity:1; transform:translateY(0); } 92%, 100% { opacity:0; transform:translateY(-10px); } }
+      .d-modal-stage { position:relative; height:74px; border-radius:8px; background:#ececea; overflow:hidden; }
+      .d-modal-stage::before { content:""; position:absolute; inset:0; background:rgba(20,20,20,.35); animation:dk-fade 3s ease-in-out infinite; }
+      .d-modal-box { position:absolute; left:50%; top:50%; width:64%; padding:9px 11px; border-radius:8px; background:#fff; box-shadow:0 12px 26px -10px rgba(0,0,0,.4); font-size:9.5px; color:#333; transform:translate(-50%,-50%); animation:dk-modal 3s cubic-bezier(.34,1.56,.64,1) infinite; }
+      .d-modal-box b { display:block; font-size:10.5px; margin-bottom:3px; color:#1b1b1b; }
+      @keyframes dk-modal { 0%, 18% { opacity:0; transform:translate(-50%,-46%) scale(.85); } 30%, 80% { opacity:1; transform:translate(-50%,-50%) scale(1); } 94%, 100% { opacity:0; transform:translate(-50%,-46%) scale(.85); } }
+      @keyframes dk-fade { 0%, 18% { opacity:0; } 30%, 80% { opacity:1; } 94%, 100% { opacity:0; } }
+      .d-drawer-stage { position:relative; height:74px; border-radius:8px; background:#f1f1ef; border:1px solid #e5e5e5; overflow:hidden; }
+      .d-drawer-panel { position:absolute; right:0; top:0; bottom:0; width:46%; background:#fff; border-left:1px solid #e5e5e5; padding:9px 10px; font-size:9px; color:#666; box-shadow:-8px 0 18px -10px rgba(0,0,0,.25); animation:dk-drawer 3.2s cubic-bezier(.16,1,.3,1) infinite; }
+      .d-drawer-panel b { display:block; font-size:10px; color:#1b1b1b; margin-bottom:4px; }
+      @keyframes dk-drawer { 0%, 22% { transform:translateX(100%); } 38%, 78% { transform:translateX(0); } 92%, 100% { transform:translateX(100%); } }
+      .d-tip-wrap { display:grid; place-items:center; padding:14px 0 20px; }
+      .d-tip-trigger { position:relative; border:1px solid #e0e0e0; border-radius:7px; background:#fff; padding:6px 14px; font-size:10px; color:#555; }
+      .d-tip-bubble { position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%); background:#1b1b1b; color:#fff; border-radius:6px; padding:5px 9px; font-size:9px; white-space:nowrap; animation:dk-tip 2.8s cubic-bezier(.16,1,.3,1) infinite; }
+      .d-tip-bubble::after { content:""; position:absolute; top:100%; left:50%; transform:translateX(-50%); border:4px solid transparent; border-top-color:#1b1b1b; }
+      @keyframes dk-tip { 0%, 22% { opacity:0; transform:translateX(-50%) translateY(4px) scale(.9); } 34%, 80% { opacity:1; transform:translateX(-50%) translateY(0) scale(1); } 92%, 100% { opacity:0; transform:translateX(-50%) translateY(4px) scale(.9); } }
+      .d-prog { height:8px; border-radius:99px; background:#eee; overflow:hidden; }
+      .d-prog i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,#d4a930,#e8c96a); animation:dk-prog 2.8s cubic-bezier(.4,0,.2,1) infinite; }
+      @keyframes dk-prog { 0% { width:4%; } 75% { width:96%; } 100% { width:4%; } }
+      .d-spinner { display:grid; place-items:center; padding:8px 0; }
+      .d-spinner i { width:26px; height:26px; border-radius:50%; border:3px solid #eee; border-top-color:#a48830; display:block; animation:sk-rot 0.8s linear infinite; }
+      @keyframes sk-rot { to { transform:rotate(360deg); } }
+      .d-sidebar-stage { display:flex; height:74px; border:1px solid #e5e5e5; border-radius:8px; overflow:hidden; background:#fff; }
+      .d-sidebar { width:52px; flex:0 0 auto; background:#1b1b1b; display:grid; align-content:start; gap:6px; padding:9px 8px; transition:width .5s cubic-bezier(.16,1,.3,1); overflow:hidden; animation:dk-sidebar 3.4s cubic-bezier(.16,1,.3,1) infinite; }
+      .d-sidebar i { height:7px; border-radius:4px; background:rgba(255,255,255,.35); display:block; font-style:normal; }
+      .d-sidebar i:first-child { background:#ffe08a; }
+      .d-sidebar-main { flex:1; padding:9px 10px; font-size:9px; color:#a0a0a0; }
+      @keyframes dk-sidebar { 0%, 22% { width:52px; } 38%, 78% { width:26px; } 92%, 100% { width:52px; } }
+      .d-split { display:flex; gap:5px; height:64px; }
+      .d-split i { border-radius:8px; display:block; font-style:normal; transition:flex 1.2s cubic-bezier(.16,1,.3,1); }
+      .d-split .d-split-l { background:linear-gradient(135deg,#fff3c4,#ffe08a); border:1px solid rgba(164,136,48,.4); animation:dk-splitl 3.6s ease-in-out infinite; }
+      .d-split .d-split-r { flex:1; background:#fff; border:1px solid #e5e5e5; display:grid; place-items:center; font-size:9px; color:#999; }
+      @keyframes dk-splitl { 0%, 100% { flex:.9; } 50% { flex:1.6; } }
+      .d-grid-demo { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; animation:dk-gridcols 4s ease-in-out infinite; }
+      .d-grid-demo span { height:30px; border-radius:6px; background:linear-gradient(135deg,#fff3c4,#ffe08a); border:1px solid rgba(164,136,48,.35); }
+      @keyframes dk-gridcols { 0%, 28% { grid-template-columns:repeat(4,1fr); } 40%, 72% { grid-template-columns:repeat(2,1fr); } 85%, 100% { grid-template-columns:repeat(4,1fr); } }
+      .d-trans { display:inline-block; padding:7px 16px; border-radius:8px; font-size:10.5px; font-weight:700; color:#fff; animation:dk-trans 2.4s ease-in-out infinite; }
+      @keyframes dk-trans { 0%, 100% { background:#1b1b1b; } 50% { background:#d4a930; } }
+      .d-ease { display:flex; align-items:flex-end; gap:14px; height:64px; justify-content:center; }
+      .d-ease i { width:16px; height:16px; border-radius:50%; background:#1b1b1b; display:block; animation:dk-ease 2s infinite; }
+      .d-ease i:nth-child(1) { background:#c9c9c9; animation-timing-function:linear; }
+      .d-ease i:nth-child(2) { background:#8a8a8a; animation-timing-function:ease-in; }
+      .d-ease i:nth-child(3) { animation-timing-function:cubic-bezier(.16,1,.3,1); }
+      @keyframes dk-ease { 0% { transform:translateY(-44px); } 55%, 100% { transform:translateY(0); } }
+      .d-spring { display:grid; place-items:center; padding:6px 0; }
+      .d-spring i { display:grid; place-items:center; width:52px; height:30px; border-radius:9px; background:#1b1b1b; color:#ffe08a; font:700 10px/1 sans-serif; font-style:normal; animation:dk-spring 2.2s cubic-bezier(.34,1.56,.64,1) infinite; }
+      @keyframes dk-spring { 0% { transform:scale(.5); opacity:0; } 22%, 78% { transform:scale(1); opacity:1; } 100% { transform:scale(.5); opacity:0; } }
+      .d-fade { display:grid; place-items:center; gap:8px; }
+      .d-fade i { display:grid; place-items:center; width:100%; height:34px; border-radius:8px; background:#fff9df; border:1px solid rgba(164,136,48,.4); color:#8a6d1c; font:650 10px/1 sans-serif; font-style:normal; animation:dk-fade 2.8s ease-in-out infinite; }
+      @keyframes dk-fade { 0%, 100% { opacity:.12; transform:translateY(6px); } 50% { opacity:1; transform:translateY(0); } }
+      .d-bread { display:flex; align-items:center; gap:6px; font-size:10px; color:#999; flex-wrap:wrap; }
+      .d-bread b { color:#1b1b1b; font-weight:650; }
+      .d-bread em { font-style:normal; animation:dk-bread 2.8s ease-in-out infinite; }
+      @keyframes dk-bread { 0%, 100% { color:#a48830; } 50% { color:#1b1b1b; } }
+      .d-steps { display:flex; align-items:center; gap:0; }
+      .d-step { display:grid; justify-items:center; gap:4px; font-size:8.5px; color:#a0a0a0; }
+      .d-step i { display:grid; place-items:center; width:20px; height:20px; border-radius:50%; background:#eee; color:#999; font:700 9px/1 sans-serif; font-style:normal; }
+      .d-step.done i { background:#d4a930; color:#fff; }
+      .d-step.done { color:#1b1b1b; }
+      .d-step.now i { background:#fff; border:2px solid #d4a930; color:#a48830; animation:dk-pulse 1.6s ease-in-out infinite; }
+      .d-step.now { color:#1b1b1b; font-weight:700; }
+      .d-step-line { width:22px; height:1.5px; background:#e2e2e2; margin:0 3px 14px; }
+      .d-step-line.fill { background:#d4a930; }
+      .d-drop-wrap { position:relative; display:inline-block; }
+      .d-drop-trigger { display:inline-flex; align-items:center; gap:6px; border:1px solid #e0e0e0; border-radius:7px; background:#fff; padding:6px 12px; font-size:10px; font-weight:650; color:#333; }
+      .d-drop-menu { position:absolute; top:calc(100% + 5px); left:0; width:110px; background:#fff; border:1px solid rgba(164,136,48,.4); border-radius:8px; box-shadow:0 10px 22px -12px rgba(164,136,48,.45); overflow:hidden; transform-origin:top; animation:dk-drop 3s cubic-bezier(.16,1,.3,1) infinite; z-index:2; }
+      .d-drop-menu span { display:block; padding:6px 11px; font-size:9.5px; color:#666; }
+      .d-drop-menu span:hover { background:#fff9df; }
+      .d-backtop { display:flex; justify-content:center; padding:6px 0; }
+      .d-backtop i { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; background:#1b1b1b; color:#ffe08a; font-style:normal; animation:dk-backtop 2.4s ease-in-out infinite; }
+      @keyframes dk-backtop { 0%, 100% { opacity:0; transform:translateY(8px); } 30%, 70% { opacity:1; transform:translateY(0); } }
+      .d-input-demo { position:relative; border:1.5px solid #d4a930; border-radius:8px; background:#fff; padding:9px 11px; font-size:10.5px; color:#333; box-shadow:0 0 0 3px rgba(255,224,138,.5); animation:dk-focus 2.6s ease-in-out infinite; }
+      .d-input-demo::after { content:"|"; color:#a48830; animation:dk-caret 1s steps(1) infinite; }
+      @keyframes dk-focus { 0%, 100% { box-shadow:0 0 0 0 rgba(255,224,138,0); border-color:#d4d4d4; } 50% { box-shadow:0 0 0 3px rgba(255,224,138,.5); border-color:#d4a930; } }
+      .d-rate { display:flex; gap:3px; font-size:17px; }
+      .d-rate i { color:#e2e2e2; font-style:normal; animation:dk-rate 2.4s steps(1) infinite; }
+      .d-rate i:nth-child(1) { animation-delay:0s; } .d-rate i:nth-child(2) { animation-delay:.24s; }
+      .d-rate i:nth-child(3) { animation-delay:.48s; } .d-rate i:nth-child(4) { animation-delay:.72s; }
+      .d-rate i:nth-child(5) { animation-delay:.96s; }
+      @keyframes dk-rate { 0% { color:#e2e2e2; } 20%, 85% { color:#d4a930; } 95%, 100% { color:#e2e2e2; } }
+      .d-check { display:grid; gap:8px; }
+      .d-check-row { display:flex; align-items:center; gap:8px; font-size:10px; color:#555; }
+      .d-check-box { position:relative; width:16px; height:16px; flex:0 0 16px; border:1.5px solid #cfcfcf; border-radius:4px; background:#fff; }
+      .d-check-box::after { content:""; position:absolute; left:4px; top:1px; width:5px; height:9px; border:solid #fff; border-width:0 2px 2px 0; transform:rotate(45deg) scale(0); }
+      .d-check-box.on { background:#d4a930; border-color:#d4a930; }
+      .d-check-box.on::after { transform:rotate(45deg) scale(1); transition:transform .2s cubic-bezier(.34,1.56,.64,1); }
+      .d-cal { border:1px solid #e5e5e5; border-radius:8px; background:#fff; padding:8px; }
+      .d-cal-head { display:flex; align-items:center; justify-content:space-between; font-size:9.5px; font-weight:700; color:#1b1b1b; padding-bottom:5px; }
+      .d-cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
+      .d-cal-grid span { display:grid; place-items:center; height:16px; border-radius:4px; font-size:8px; color:#888; }
+      .d-cal-grid span.sel { background:#d4a930; color:#fff; font-weight:700; animation:dk-sel 2.4s ease-in-out infinite; }
+      @keyframes dk-sel { 50% { box-shadow:0 0 0 3px rgba(212,169,48,.3); } }
+
+      /* ===== 补齐：分页控件（此前无样式导致显示异常） ===== */
+      .d-pager { display:flex; align-items:center; justify-content:center; gap:5px; font-size:10.5px; color:#888; }
+      .d-pager i { font-style:normal; color:#bbb; padding:0 2px; }
+      .d-pager b, .d-pager span { display:grid; place-items:center; min-width:22px; height:22px; padding:0 5px; border-radius:6px; background:#f4f4f2; color:#666; font-weight:600; }
+      .d-pager b { background:#1b1b1b; color:#ffe08a; font-weight:700; }
+      .d-pager span:nth-of-type(1) { animation:dk-pager 3s steps(1) infinite; }
+      .d-pager span:nth-of-type(2) { animation:dk-pager 3s 1s steps(1) infinite; }
+      @keyframes dk-pager { 0%, 28% { background:#1b1b1b; color:#ffe08a; font-weight:700; } 34%, 100% { background:#f4f4f2; color:#666; font-weight:600; } }
+
+      /* ===== 补齐：开关 Toggle（此前无样式导致显示异常） ===== */
+      .d-toggle-row { display:flex; align-items:center; gap:8px; justify-content:center; font-size:10.5px; color:#555; }
+      .d-toggle-row span + i { margin-left:12px; }
+      .d-toggle { position:relative; display:inline-block; width:30px; height:17px; flex:0 0 30px; border-radius:99px; background:#dcdcd8; }
+      .d-toggle::after { content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); }
+      .d-toggle.on { background:#d4a930; }
+      .d-toggle.on::after { transform:translateX(13px); }
+      .d-toggle-row .d-toggle:not(.on) { animation:dk-toggle-bg 3s ease-in-out infinite; }
+      .d-toggle-row .d-toggle:not(.on)::after { animation:dk-toggle-knob 3s cubic-bezier(.34,1.56,.64,1) infinite; }
+      @keyframes dk-toggle-bg { 0%, 20% { background:#dcdcd8; } 35%, 80% { background:#d4a930; } 95%, 100% { background:#dcdcd8; } }
+      @keyframes dk-toggle-knob { 0%, 20% { transform:translateX(0); } 35%, 80% { transform:translateX(13px); } 95%, 100% { transform:translateX(0); } }
+
+      /* ===== 补齐：用量圆环（此前无样式导致显示异常） ===== */
+      .d-ring { display:inline-block; width:36px; height:36px; flex:0 0 36px; border-radius:50%;
+        background:conic-gradient(#d4a930 0turn .73turn, #e8e8e4 .73turn 1turn);
+        -webkit-mask:radial-gradient(circle at 50% 50%, transparent 8.5px, #000 9.5px);
+        mask:radial-gradient(circle at 50% 50%, transparent 8.5px, #000 9.5px);
+        animation:dk-ring 3s ease-in-out infinite; }
+      @keyframes dk-ring { 50% { transform:scale(1.09) rotate(6deg); } }
+
+      /* ===== 补充组件演示（41-52） ===== */
+      .d-search { display:grid; gap:6px; }
+      .d-search-input { display:flex; align-items:center; gap:7px; border:1.5px solid #d4a930; border-radius:8px; background:#fff; padding:8px 11px; font-size:10.5px; color:#333; box-shadow:0 0 0 3px rgba(255,224,138,.4); }
+      .d-search-input::after { content:"|"; color:#a48830; animation:dk-caret 1s steps(1) infinite; }
+      .d-search-pop { border:1px solid rgba(164,136,48,.4); border-radius:8px; background:#fff; box-shadow:0 8px 18px -10px rgba(164,136,48,.4); overflow:hidden; }
+      .d-search-pop span { display:flex; align-items:center; padding:5px 10px; font-size:9.5px; color:#666; }
+      .d-search-pop span.on { background:#fff9df; color:#8a6d1c; font-weight:700; }
+      .d-search-pop span em { margin-left:auto; color:#c2c2c2; font:9px/1 ui-monospace,monospace; font-style:normal; }
+
+      .d-seg { position:relative; display:grid; grid-template-columns:repeat(3,1fr); border:1px solid #e2e2e2; border-radius:9px; background:#f1f1ef; padding:3px; width:78%; margin:0 auto; }
+      .d-seg-thumb { position:absolute; top:3px; bottom:3px; left:3px; width:calc((100% - 6px)/3); border-radius:7px; background:#fff; box-shadow:0 2px 6px rgba(0,0,0,.16); animation:dk-seg 3.6s cubic-bezier(.22,1,.36,1) infinite; }
+      .d-seg button { position:relative; z-index:1; border:0; background:transparent; padding:6px 0; font-size:10px; color:#777; }
+      @keyframes dk-seg { 0%,30% { transform:translateX(0); } 37%,63% { transform:translateX(100%); } 70%,95% { transform:translateX(200%); } 100% { transform:translateX(0); } }
+
+      .d-otp { display:flex; gap:6px; justify-content:center; }
+      .d-otp i { display:grid; place-items:center; width:26px; height:32px; border-radius:8px; border:1.5px solid #d9d9d4; background:#fff; font:700 13px/1 ui-monospace,monospace; color:#333; font-style:normal; }
+      .d-otp i:nth-child(-n+4) { border-color:#d4a930; }
+      .d-otp i:nth-child(5) { border-color:#d4a930; }
+      .d-otp i:nth-child(5)::after { content:"|"; color:#a48830; animation:dk-caret 1s steps(1) infinite; }
+
+      .d-upload { display:grid; place-items:center; gap:7px; }
+      .d-drop { width:82%; display:grid; place-items:center; gap:3px; border:1.5px dashed rgba(164,136,48,.5); border-radius:10px; background:#fffdf6; padding:11px 8px; color:#a0a0a0; font-size:9.5px; animation:dk-dropzone 3s ease-in-out infinite; }
+      .d-drop b { color:#a48830; font-size:12px; }
+      @keyframes dk-dropzone { 50% { border-color:rgba(164,136,48,.85); background:#fff9e8; transform:scale(1.02); } }
+      .d-file { width:82%; display:flex; align-items:center; gap:7px; border:1px solid #e5e5e5; border-radius:8px; background:#fff; padding:6px 9px; font-size:9.5px; color:#555; }
+      .d-file .d-filebar { flex:1; height:4px; border-radius:99px; background:#eee; overflow:hidden; }
+      .d-file .d-filebar i { display:block; height:100%; border-radius:99px; background:#4fa97c; animation:dk-fileup 2.8s ease-in-out infinite; }
+      .d-file em { color:#4fa97c; font-style:normal; font-size:9px; font-variant-numeric:tabular-nums; }
+      @keyframes dk-fileup { 0% { width:8%; } 70%, 85% { width:100%; } 100% { width:8%; } }
+
+      .d-stepper { display:flex; align-items:center; width:70%; margin:0 auto; border:1px solid #e0e0e0; border-radius:9px; background:#fff; overflow:hidden; }
+      .d-stepper i { display:grid; place-items:center; width:30px; height:30px; color:#a48830; font:700 14px/1 sans-serif; font-style:normal; background:#faf8f2; }
+      .d-stepper b { flex:1; text-align:center; font-size:13px; color:#1b1b1b; font-variant-numeric:tabular-nums; }
+      .d-stepper b em { color:#a0a0a0; font-size:9px; font-style:normal; margin-left:3px; }
+
+      .d-tags { display:flex; flex-wrap:wrap; gap:5px; justify-content:center; }
+      .d-tags span { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:99px; font-size:9.5px; font-weight:600; }
+      .d-tags span i { font-style:normal; opacity:.55; }
+      .d-tags .d-tag-add { border:1px dashed #cfc9ba; color:#a0a0a0; background:transparent; }
+      .d-tags span:nth-child(3) { animation:dk-tagpop 3s ease-in-out infinite; }
+      @keyframes dk-tagpop { 0%,68% { transform:scale(1); } 76%,90% { transform:scale(1.1); } 100% { transform:scale(1); } }
+
+      .d-badge { display:flex; align-items:center; justify-content:center; gap:24px; }
+      .d-b-avatar { position:relative; width:38px; height:38px; border-radius:50%; background:linear-gradient(135deg,#efe6d4,#dccfb6); display:grid; place-items:center; color:#8a7a5e; font:700 12px/1 sans-serif; }
+      .d-b-avatar::after { content:""; position:absolute; top:1px; right:1px; width:9px; height:9px; border-radius:50%; background:#e0554a; border:2px solid #fff; animation:dk-pulse 1.6s ease-in-out infinite; }
+      .d-b-bell { position:relative; width:36px; height:36px; border:1px solid #e2e2e2; border-radius:10px; display:grid; place-items:center; color:#777; font-size:13px; background:#fff; }
+      .d-b-bell::after { content:"99+"; position:absolute; top:-7px; right:-9px; padding:1px 4px; border-radius:99px; background:#e0554a; color:#fff; font:700 8px/1.5 sans-serif; }
+      .d-b-dot { position:relative; width:30px; height:30px; border-radius:50%; border:1.5px solid #d9d9d4; background:#fff; }
+      .d-b-dot::after { content:""; position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%; background:#3a8a4d; border:2px solid #fff; }
+
+      .d-table { border:1px solid #e5e5e5; border-radius:9px; background:#fff; overflow:hidden; font-size:9.5px; }
+      .d-table .t-head, .d-table .t-row { display:grid; grid-template-columns:1.3fr 1fr .8fr; padding:5px 9px; align-items:center; }
+      .d-table .t-head { background:#faf8f2; color:#a0a0a0; font-weight:700; border-bottom:1px solid #eee; }
+      .d-table .t-head em { font-style:normal; color:#a48830; }
+      .d-table .t-row { color:#555; border-top:1px solid #f2f2f0; animation:dk-trow 3.6s ease-in-out infinite; }
+      .d-table .t-row:nth-child(3) { animation-delay:1.2s; }
+      .d-table .t-row:nth-child(4) { animation-delay:2.4s; }
+      .d-table .t-row b { text-align:right; font-variant-numeric:tabular-nums; color:#333; }
+      .d-table .pill { padding:1px 7px; border-radius:99px; font-size:8.5px; }
+      .d-table .pill.ok { background:#e6f4ec; color:#2f9e6e; }
+      .d-table .pill.warn { background:#fdf3dc; color:#c08a1e; }
+      .d-table .pill.err { background:#fdecea; color:#d05a52; }
+      @keyframes dk-trow { 0%,88% { background:transparent; } 92%, 96% { background:#fff9df; } 100% { background:transparent; } }
+
+      .d-code { position:relative; border-radius:9px; background:#1b1b1b; padding:10px 12px; color:#d8e0c8; font:9.5px/1.75 ui-monospace,monospace; white-space:nowrap; overflow:hidden; }
+      .d-code .syn-k { color:#c792ea; }
+      .d-code .syn-s { color:#a5d6a7; }
+      .d-code .cp { position:absolute; top:7px; right:8px; font-style:normal; font-size:8.5px; padding:1px 7px; border-radius:5px; }
+      .d-code .cp1 { color:#ffe08a; border:1px solid rgba(255,224,138,.4); animation:dk-cp1 3.4s steps(1) infinite; }
+      .d-code .cp2 { color:#7ee2a8; background:rgba(74,169,124,.22); opacity:0; animation:dk-cp2 3.4s steps(1) infinite; }
+      @keyframes dk-cp1 { 0%,62% { opacity:1; } 68%, 96% { opacity:0; } 100% { opacity:1; } }
+      @keyframes dk-cp2 { 0%,62% { opacity:0; } 68%, 96% { opacity:1; } 100% { opacity:0; } }
+
+      .d-cmdk { width:84%; margin:0 auto; border:1px solid rgba(164,136,48,.4); border-radius:10px; background:#fff; box-shadow:0 14px 30px -14px rgba(0,0,0,.3); overflow:hidden; }
+      .d-cmdk-input { display:flex; align-items:center; gap:6px; padding:7px 10px; font-size:10px; color:#333; border-bottom:1px solid #f0ede4; }
+      .d-cmdk-input b { color:#a48830; }
+      .d-cmdk-input kbd { margin-left:auto; padding:1px 5px; border:1px solid #e2e2e2; border-radius:4px; font:8.5px/1.4 ui-monospace,monospace; color:#a0a0a0; }
+      .d-cmdk-item { display:flex; align-items:center; gap:7px; padding:5px 10px; font-size:9.5px; color:#666; animation:dk-cmdk 3.6s ease-in-out infinite; }
+      .d-cmdk-item i { font-style:normal; color:#b9a97e; }
+      .d-cmdk-item em { margin-left:auto; font-style:normal; color:#c2c2c2; font-size:8.5px; }
+      .d-cmdk-item:nth-child(3) { animation-delay:1.2s; }
+      .d-cmdk-item:nth-child(4) { animation-delay:2.4s; }
+      @keyframes dk-cmdk { 0%,88% { background:transparent; color:#666; } 92%, 96% { background:#fff9df; color:#8a6d1c; font-weight:700; } 100% { background:transparent; color:#666; } }
+
+      .d-tabbar { display:flex; justify-content:space-around; align-items:center; border:1px solid #e5e5e5; border-radius:12px; background:#fff; padding:8px 6px; }
+      .d-tabbar span { display:grid; justify-items:center; gap:3px; font-size:8px; color:#b5b5b5; padding:0 10px; position:relative; }
+      .d-tabbar span i { width:16px; height:16px; border-radius:5px; background:#e5e5e5; display:block; }
+      .d-tabbar span.on { color:#a48830; font-weight:700; }
+      .d-tabbar span.on i { background:#d4a930; animation:dk-float 2.6s ease-in-out infinite; }
+      .d-tabbar span .dot { position:absolute; top:-2px; right:4px; width:6px; height:6px; border-radius:50%; background:#e0554a; border:1.5px solid #fff; }
+
+      .d-type { border-radius:9px; background:#fff; border:1px solid #e5e5e5; padding:11px 13px; display:flex; justify-content:center; }
+      .d-type-t { display:inline-block; overflow:hidden; white-space:nowrap; vertical-align:bottom; border-right:1.5px solid #a48830; padding-right:2px; font:10.5px/1.7 ui-monospace,monospace; color:#555;
+        width:23ch; animation:dk-type 3.8s steps(23) infinite, dk-caret 1s steps(1) infinite; }
+      @keyframes dk-type { 0% { width:0; } 55%, 82% { width:23ch; } 100% { width:0; } }
+
+      /* ===== Footer ===== */
+      .ui-footer { width:min(100% - 48px, 1160px); margin:0 auto; padding:0 0 46px; color:#b5b5b5; font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+
+      @media (max-width:1080px) {
+        .ui-hero { grid-template-columns:1fr; gap:0; }
+        .ui-hero-show { display:none; }
+        .ui-fields { grid-template-columns:1fr; }
+      }
+      @media (max-width:820px) {
+        .ui-hero { padding-top:130px; }
+        .ui-hero h1 { font-size:clamp(40px, 11vw, 64px); }
+        .ui-list { grid-template-columns:1fr; }
+        .ui-detail-body { grid-template-columns:1fr; }
+        .ui-nav-links button { display:none; }
+      }
+      @media (prefers-reduced-motion:reduce) {
+        .uikit-page *, .uikit-page *::before, .uikit-page *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+      }
+    `}</style>
+
+    <nav className={`ui-nav${shrunk ? ' is-shrunk' : ''}`}>
+      <a className="ui-nav-logo" href="#/"><i />UI 组件图鉴<em>UI COMPENDIUM</em></a>
+      <div className="ui-nav-links">
+        {UI_CATS.filter((x) => x.key !== 'all').map((x) => (
+          <button key={x.key} type="button" onClick={() => jump(x.key)}>{x.label}</button>
+        ))}
+      </div>
+      <a className="ui-nav-home" href="#/"><Home size={14} />返回主页</a>
+    </nav>
+
+    <header className="ui-hero">
+      <div className="ui-hero-main">
+        <span className="ui-hero-kicker">UI COMPENDIUM · FOR DEVELOPERS</span>
+        <h1>界面组件<br /><span>图鉴</span></h1>
+        <p>
+          专门讲解网页与后台系统里常见界面组件的查阅手册：每个部件叫什么名字、长什么样子（动效演示）、
+          用在什么场景、又是怎么实现的。卡片默认全部展开，点卡片可收起；右上角「复制提示词」可以把同款风格直接喂给 AI。
+        </p>
+        <div className="ui-hero-stats">
+          <span><b>{UI_COMPONENTS.length}</b>个组件</span>
+          <span><b>{UI_CATS.length - 1}</b>大分类</span>
+          <span><b>5</b>个讲解维度</span>
+          <span><b>{UI_COMPONENTS.length}</b>个循环动效</span>
+        </div>
+        <span className="ui-hero-cue">↓ 向下滚动，导航会变形为胶囊</span>
+      </div>
+      <aside className="ui-hero-show" aria-hidden="true">
+        <div className="ui-hero-show-frame">
+          <div className="ui-hero-show-head"><i /><i /><i /><span>LIVE · 组件实时演示</span></div>
+          <Demo type="pillnav" />
+          <Demo type="dashboard" />
+          <Demo type="statistic" />
+        </div>
+        <p className="ui-hero-show-cap">演示全部真实运行 · 40 个组件见下方图鉴</p>
+      </aside>
+    </header>
+
+    <div className="ui-cats" role="tablist" aria-label="组件分类">
+      {UI_CATS.map((x) => {
+        const count = x.key === 'all' ? UI_COMPONENTS.length : UI_COMPONENTS.filter((c) => c.cat === x.key).length;
+        return (
+          <button key={x.key} type="button" className={`ui-cat${cat === x.key ? ' is-active' : ''}`} onClick={() => setCat(x.key)}>
+            {x.label} <b>{count}</b>
+          </button>
+        );
+      })}
+    </div>
+
+    <main className="ui-list">
+      {shown.map((c) => {
+        const open = !closedIds.has(c.no);
+        return (
+          <article
+            key={c.no}
+            id={`comp-${c.no}`}
+            className={`ui-card${open ? ' is-open' : ''}`}
+            onClick={() => toggle(c.no)}
+            role="button"
+            tabIndex={0}
+            aria-expanded={open}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(c.no); } }}
+          >
+            <div className="ui-card-top">
+              <span className="ui-no">{c.no}</span>
+              <span className="ui-card-name"><h3>{c.name}</h3><em>{c.en}</em></span>
+              <button
+                type="button"
+                className={`ui-copy${copiedNo === c.no ? ' is-copied' : ''}`}
+                title="复制该组件的设计提示词，粘贴给 AI 即可生成同款风格"
+                onClick={(e) => { e.stopPropagation(); copyPrompt(c); }}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                {copiedNo === c.no ? <Check size={13} /> : <Copy size={13} />}
+                {copiedNo === c.no ? '已复制' : '复制提示词'}
+              </button>
+              <span className="ui-card-cat">{UI_CATS.find((x) => x.key === c.cat)?.label || c.cat}</span>
+              <ChevronDown size={17} className="ui-chevron" />
+            </div>
+            <p className="ui-look">{c.look}</p>
+            <div className="ui-detail">
+              <div className="ui-detail-inner">
+                <div className="ui-detail-body">
+                  <Demo type={c.demo} />
+                  <div className="ui-fields">
+                    <div className="ui-field"><h4>使用场景</h4><p>{c.scene}</p></div>
+                    <div className="ui-field"><h4>实现原理</h4><p>{c.how}</p></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </main>
+
+    <footer className="ui-footer">VOYRA / UI COMPENDIUM · 纯前端查阅手册 · 持续收录新组件</footer>
+  </div>;
+}
+
+/* ============ 循环动效演示（40 种） ============ */
+function Demo({ type }) {
+  switch (type) {
+    case 'pillnav':
+      return <div className="ui-demo">
+        <div className="d-browser"><i /><i /><i />
+          <div className="d-nav-wide"><b>通栏态</b><span>内容左右分开排布</span></div>
+          <div className="d-nav-morph"><b>LOGO</b><span>收缩为悬浮胶囊 ↻</span></div>
+        </div>
+        <p>滚动时通栏 ⇄ 胶囊 循环变形</p>
+      </div>;
+    case 'favicon':
+      return <div className="ui-demo">
+        <div className="d-tabs">
+          <span className="d-tab d-tab1 is-on"><i className="d-fav">V</i>Voyra 工具中心</span>
+          <span className="d-tab d-tab2"><i className="d-fav d-fav2">G</i>GitHub</span>
+          <span className="d-tab d-tab3"><i className="d-fav d-fav3">M</i>MCP 文档</span>
+        </div>
+        <p>当前标签轮流高亮切换</p>
+      </div>;
+    case 'pagination':
+      return <div className="ui-demo">
+        <div className="d-pager"><i>‹</i><b>1</b><span>2</span><span>3</span><span>…</span><span>8</span><i>›</i></div>
+        <p>当前页高亮 · 省略号折叠</p>
+      </div>;
+    case 'breadcrumb':
+      return <div className="ui-demo">
+        <div className="d-bread"><span>首页</span> / <span>产品</span> / <em>Voyra Pro 详情</em></div>
+        <p>当前页加粗 · 上级可点击返回</p>
+      </div>;
+    case 'steps':
+      return <div className="ui-demo">
+        <div className="d-steps">
+          <span className="d-step done"><i>✓</i>填写</span><span className="d-step-line fill" />
+          <span className="d-step now"><i>2</i>确认</span><span className="d-step-line" />
+          <span className="d-step"><i>3</i>支付</span>
+        </div>
+        <p>已完成打钩 · 当前步脉冲</p>
+      </div>;
+    case 'dropdown':
+      return <div className="ui-demo">
+        <div className="d-drop-wrap">
+          <span className="d-drop-trigger">帅帅你阿历 ▾</span>
+          <div className="d-drop-menu"><span>个人设置</span><span>我的密钥</span><span>退出登录</span></div>
+        </div>
+        <p>点击触发 · 缩放淡入展开</p>
+      </div>;
+    case 'backtop':
+      return <div className="ui-demo">
+        <div className="d-backtop"><i>↑</i></div>
+        <p>滚过一屏淡入 · 点击回顶部</p>
+      </div>;
+    case 'tabs':
+      return <div className="ui-demo">
+        <div className="d-tabs">
+          <span className="d-tab d-tab1 is-on">描述</span>
+          <span className="d-tab d-tab2">参数</span>
+          <span className="d-tab d-tab3">评价</span>
+        </div>
+        <p>指示条随选中页签滑动</p>
+      </div>;
+    case 'sampling':
+      return <div className="ui-demo">
+        <div className="d-slider"><span>Temperature</span><i className="d-track"><i className="d-fill" style={{ width: '70%' }} /><i className="d-knob d-knob-anim" /></i><b>0.7</b></div>
+        <div className="d-slider"><span>Top-P</span><i className="d-track"><i className="d-fill" style={{ width: '82%' }} /><i className="d-knob d-knob-anim2" /></i><b>0.9</b></div>
+        <p>滑杆来回拖动 · 数值同步</p>
+      </div>;
+    case 'context':
+      return <div className="ui-demo">
+        <div className="d-ctx-input">输入你的问题…<em>7,120 / 8,192</em></div>
+        <div className="d-ctx-bar"><i /></div>
+        <p>token 增长 · 逼近上限变色</p>
+      </div>;
+    case 'model':
+      return <div className="ui-demo">
+        <div className="d-select">voyra-pro-max <i>▾</i></div>
+        <div className="d-select-panel"><span className="on">voyra-pro-max</span><span>voyra-lite</span><span>voyra-vision</span></div>
+        <p>下拉展开 · 选中项高亮</p>
+      </div>;
+    case 'toggle':
+      return <div className="ui-demo">
+        <div className="d-toggle-row"><i className="d-toggle on" /><span>深色模式</span><i className="d-toggle" /><span>通知推送</span></div>
+        <p>滑块位移过渡 · 开关循环</p>
+      </div>;
+    case 'input':
+      return <div className="ui-demo">
+        <div className="d-input-demo">you@example.com</div>
+        <p>聚焦金框 · 光标闪烁</p>
+      </div>;
+    case 'slider':
+      return <div className="ui-demo">
+        <div className="d-slider"><span>价格区间</span><i className="d-track"><i className="d-fill" style={{ width: '60%' }} /><i className="d-knob d-knob-anim" /></i><b>¥600</b></div>
+        <div className="d-slider"><span>音量</span><i className="d-track"><i className="d-fill" style={{ width: '45%' }} /><i className="d-knob d-knob-anim2" /></i><b>45</b></div>
+        <p>拖拽旋钮 · 填充段跟随</p>
+      </div>;
+    case 'rate':
+      return <div className="ui-demo">
+        <div className="d-rate"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></div>
+        <p>星星逐个点亮循环</p>
+      </div>;
+    case 'checkbox':
+      return <div className="ui-demo">
+        <div className="d-check">
+          <span className="d-check-row"><i className="d-check-box on" />全选</span>
+          <span className="d-check-row"><i className="d-check-box on" />前端组件</span>
+          <span className="d-check-row"><i className="d-check-box" />后台模板</span>
+        </div>
+        <p>对勾描画 · 全选联动</p>
+      </div>;
+    case 'datepicker':
+      return <div className="ui-demo">
+        <div className="d-cal">
+          <div className="d-cal-head"><span>‹</span>2026 年 8 月<span>›</span></div>
+          <div className="d-cal-grid">
+            {Array.from({ length: 31 }, (_, i) => <span key={i} className={i === 25 ? 'sel' : ''}>{i + 1}</span>)}
+          </div>
+        </div>
+        <p>点日期选中 · 当月面板</p>
+      </div>;
+    case 'tokens':
+      return <div className="ui-demo">
+        <div className="d-token-head"><span>名称</span><span>密钥</span><span>操作</span></div>
+        <div className="d-token-row"><b>生产环境</b><code>sk-voyra-••••••••7f2a</code><em className="d-token-copy">已复制</em></div>
+        <div className="d-token-row"><b>测试环境</b><code>sk-voyra-••••••••c91d</code><em>复制</em></div>
+        <p>密钥脱敏 · 复制反馈循环</p>
+      </div>;
+    case 'dashboard':
+      return <div className="ui-demo">
+        <div className="d-dash">
+          <div className="d-kpi"><span>今日调用</span><b>12,480</b></div>
+          <div className="d-kpi"><span>成功率</span><b>99.2%</b></div>
+          <div className="d-chart"><i /><i /><i /><i /><i /></div>
+        </div>
+        <p>柱状图呼吸起伏</p>
+      </div>;
+    case 'masonry':
+      return <div className="ui-demo">
+        <div className="d-masonry">
+          <span style={{ height: 44 }} /><span className="d-fall" style={{ height: 30 }} /><span style={{ height: 56 }} />
+          <span style={{ height: 28 }} /><span style={{ height: 50 }} /><span style={{ height: 36 }} />
+        </div>
+        <p>新卡落入最矮列循环</p>
+      </div>;
+    case 'usage':
+      return <div className="ui-demo">
+        <div className="d-usage">
+          <i className="d-ring" />
+          <div className="d-usage-copy"><b>$ 36.50</b><span>已用 73% · 剩 $ 13.50</span></div>
+        </div>
+        <p>SVG 圆环 · 阈值变色告警</p>
+      </div>;
+    case 'card':
+      return <div className="ui-demo">
+        <div className="d-card-demo">
+          <div className="d-card-img" />
+          <div className="d-card-body"><b>Voyra Pro 模板</b>图在上 · 信息在下 · 整卡可点</div>
+        </div>
+        <p>悬浮抬升 + 投影加深</p>
+      </div>;
+    case 'statistic':
+      return <div className="ui-demo">
+        <div className="d-stat">
+          <b>
+            <span className="d-nums">
+              <i>12,480<br />13,102<br />15,877</i>
+            </span>
+          </b>
+          <span className="d-trend">↑ 12%</span>
+          <div>今日调用 · 环比上升</div>
+        </div>
+        <p>数字滚动 + 趋势箭头</p>
+      </div>;
+    case 'timeline':
+      return <div className="ui-demo">
+        <div className="d-tl">
+          <span className="d-tl-item done">已下单 · 10:24</span>
+          <span className="d-tl-item done">已发货 · 14:02</span>
+          <span className="d-tl-item now">运输中 · 预计明天</span>
+        </div>
+        <p>节点状态 · 当前脉冲</p>
+      </div>;
+    case 'carousel':
+      return <div className="ui-demo">
+        <div className="d-carousel">
+          <div className="d-carousel-track"><i>Banner 1</i><i>Banner 2</i><i>Banner 3</i></div>
+        </div>
+        <p>自动轮播 · 循环衔接</p>
+      </div>;
+    case 'empty':
+      return <div className="ui-demo">
+        <div className="d-empty"><i /><span>还没有数据，点击「新建」开始</span></div>
+        <p>插画浮动 + 行动引导</p>
+      </div>;
+    case 'skeleton':
+      return <div className="ui-demo">
+        <div className="d-skel"><i /><i /><i /></div>
+        <p>流光扫过 · 布局与内容一致</p>
+      </div>;
+    case 'toast':
+      return <div className="ui-demo">
+        <div className="d-toast"><span>已保存</span></div>
+        <p>滑入 · 停留 · 自动滑出</p>
+      </div>;
+    case 'modal':
+      return <div className="ui-demo">
+        <div className="d-modal-stage">
+          <div className="d-modal-box"><b>确认删除？</b>此操作不可恢复，请谨慎操作。</div>
+        </div>
+        <p>遮罩变暗 · 弹性缩放弹出</p>
+      </div>;
+    case 'drawer':
+      return <div className="ui-demo">
+        <div className="d-drawer-stage">
+          <div className="d-drawer-panel"><b>详情面板</b>从右侧滑出，背后列表仍可见。</div>
+        </div>
+        <p>右侧滑入 · 滑出循环</p>
+      </div>;
+    case 'tooltip':
+      return <div className="ui-demo">
+        <div className="d-tip-wrap">
+          <span className="d-tip-trigger">悬停我<i className="d-tip-bubble">这个图标是用来导出的</i></span>
+        </div>
+        <p>气泡浮现 · 箭头指向触发器</p>
+      </div>;
+    case 'progress':
+      return <div className="ui-demo">
+        <div className="d-prog"><i /></div>
+        <p>0 → 100% 循环增长</p>
+      </div>;
+    case 'spinner':
+      return <div className="ui-demo">
+        <div className="d-spinner"><i /></div>
+        <p>旋转圆环 · 经典加载态</p>
+      </div>;
+    case 'sidebar':
+      return <div className="ui-demo">
+        <div className="d-sidebar-stage">
+          <div className="d-sidebar"><i /><i /><i /><i /></div>
+          <div className="d-sidebar-main">内容区</div>
+        </div>
+        <p>侧栏折叠 ⇄ 展开循环</p>
+      </div>;
+    case 'split':
+      return <div className="ui-demo">
+        <div className="d-split">
+          <i className="d-split-l" />
+          <i className="d-split-r">登录表单</i>
+        </div>
+        <p>左右分栏比例变化</p>
+      </div>;
+    case 'grid':
+      return <div className="ui-demo">
+        <div className="d-grid-demo">
+          <span /><span /><span /><span /><span /><span /><span /><span />
+        </div>
+        <p>宽屏 4 列 ⇄ 窄屏 2 列</p>
+      </div>;
+    case 'transition':
+      return <div className="ui-demo">
+        <div style={{ textAlign: 'center' }}><span className="d-trans">Hover 过渡</span></div>
+        <p>背景色平滑渐变循环</p>
+      </div>;
+    case 'easing':
+      return <div className="ui-demo">
+        <div className="d-ease"><i /><i /><i /></div>
+        <p>线性 / 缓入 / 缓出 对比</p>
+      </div>;
+    case 'spring':
+      return <div className="ui-demo">
+        <div className="d-spring"><i>♥ 点赞</i></div>
+        <p>过冲回弹 · 弹簧质感</p>
+      </div>;
+    case 'fade':
+      return <div className="ui-demo">
+        <div className="d-fade"><i>内容淡入淡出</i></div>
+        <p>透明度 + 位移循环</p>
+      </div>;
+    case 'search':
+      return <div className="ui-demo">
+        <div className="d-search">
+          <div className="d-search-input">搜索：提示词…</div>
+          <div className="d-search-pop">
+            <span className="on">提示词库 · 56 条结果</span>
+            <span>提示词工程指南</span>
+            <span>结构化提示词模板<em>↵</em></span>
+          </div>
+        </div>
+        <p>输入联想 · 键盘上下选择</p>
+      </div>;
+    case 'segmented':
+      return <div className="ui-demo">
+        <div className="d-seg">
+          <i className="d-seg-thumb" />
+          <button type="button">日付</button>
+          <button type="button">周付</button>
+          <button type="button">月付</button>
+        </div>
+        <p>白色滑块平滑滑向选中项</p>
+      </div>;
+    case 'otp':
+      return <div className="ui-demo">
+        <div className="d-otp"><i>4</i><i>8</i><i>2</i><i>9</i><i /><i /></div>
+        <p>输完自动跳格 · 粘贴自动拆分</p>
+      </div>;
+    case 'upload':
+      return <div className="ui-demo">
+        <div className="d-upload">
+          <div className="d-drop"><b>⇪</b>拖入文件或点击上传</div>
+          <div className="d-file"><span>体检报告.pdf</span><i className="d-filebar"><i /></i><em>86%</em></div>
+        </div>
+        <p>拖放高亮 · 上传进度循环</p>
+      </div>;
+    case 'stepper':
+      return <div className="ui-demo">
+        <div className="d-stepper"><i>−</i><b>2<em>张</em></b><i>＋</i></div>
+        <p>点击加减 · 长按连续 · 越界夹紧</p>
+      </div>;
+    case 'tags':
+      return <div className="ui-demo">
+        <div className="d-tags">
+          <span style={{ background: '#fff9df', color: '#8a6d1c' }}>React<i>×</i></span>
+          <span style={{ background: '#e6f2f1', color: '#4fa39c' }}>CSS<i>×</i></span>
+          <span style={{ background: '#eef5e8', color: '#5f8f52' }}>动效<i>×</i></span>
+          <span className="d-tag-add">＋ 添加</span>
+        </div>
+        <p>回车新增 · 点 × 移除</p>
+      </div>;
+    case 'badge':
+      return <div className="ui-demo">
+        <div className="d-badge">
+          <span className="d-b-avatar">V</span>
+          <span className="d-b-bell">✉</span>
+          <span className="d-b-dot" />
+        </div>
+        <p>红点脉冲 · 99+ 胶囊 · 在线状态</p>
+      </div>;
+    case 'table':
+      return <div className="ui-demo">
+        <div className="d-table">
+          <div className="t-head"><span>项目</span><span>状态 <em>↕</em></span><span>额度</span></div>
+          <div className="t-row"><span>voyra-api</span><span><i className="pill ok">运行中</i></span><b>$ 36.5</b></div>
+          <div className="t-row"><span>modelflow</span><span><i className="pill warn">限流中</i></span><b>$ 12.0</b></div>
+          <div className="t-row"><span>relay-cdn</span><span><i className="pill err">已暂停</i></span><b>$ 0.0</b></div>
+        </div>
+        <p>表头可排序 · 行高亮循环</p>
+      </div>;
+    case 'code':
+      return <div className="ui-demo">
+        <div className="d-code">
+          <em className="cp cp1">复制</em><em className="cp cp2">✓ 已复制</em>
+          <div><span className="syn-k">const</span> api = <span className="syn-s">'lxlrwxs.top'</span>;</div>
+          <div>fetch(api + <span className="syn-s">'/v1/chat'</span>);</div>
+        </div>
+        <p>一键复制 · 成功态反馈循环</p>
+      </div>;
+    case 'cmdk':
+      return <div className="ui-demo">
+        <div className="d-cmdk">
+          <div className="d-cmdk-input"><b>⌘K</b>输入指令或搜索…<kbd>ESC</kbd></div>
+          <div className="d-cmdk-item on"><i>▷</i>跳转到组件图鉴<em>↵</em></div>
+          <div className="d-cmdk-item"><i>▷</i>新建提示词<em>G G</em></div>
+          <div className="d-cmdk-item"><i>▷</i>切换深色模式<em>D</em></div>
+        </div>
+        <p>↑↓ 选择 · 回车执行 · Esc 关闭</p>
+      </div>;
+    case 'tabbar':
+      return <div className="ui-demo">
+        <div className="d-tabbar">
+          <span><i />首页</span>
+          <span className="on"><i />图鉴</span>
+          <span><i />我的<b className="dot" /></span>
+        </div>
+        <p>选中上浮染色 · 未读红点提醒</p>
+      </div>;
+    case 'type':
+      return <div className="ui-demo">
+        <div className="d-type"><span className="d-type-t">npm create voyra@latest</span></div>
+        <p>逐字打出 · 光标闪烁 · 循环重播</p>
+      </div>;
+    default:
+      return null;
+  }
+}

@@ -2,14 +2,14 @@
     "version":  "1.0.0",
     "name":  "voyra-uikit",
     "license":  "MIT",
-    "description":  "缁勪欢鍥鹃壌 路 缃戦〉涓庡悗鍙板父瑙?UI 缁勪欢鍚嶇О/澶栬/鍦烘櫙/鍘熺悊涓€椤佃娓咃紙Voyra 妯″潡锛墊 UI component gallery",
+    "description":  "组件图鉴 · 网页与后台常见 UI 组件名称/外观/场景/原理一页讲清（Voyra 模块）| UI component gallery",
     "keywords":  [
                      "ui",
                      "uikit",
                      "components",
                      "design",
                      "react",
-                     "缁勪欢鍥鹃壌"
+                     "组件图鉴"
                  ],
     "private":  true
 }
