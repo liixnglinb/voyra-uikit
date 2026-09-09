@@ -4,7 +4,7 @@
 
 **常见界面组件叫什么、长什么样、用在哪、怎么设计 ｜ A visual handbook of common UI components**
 
-[![Sync to Voyra](https://github.com/liixnglinb/voyra-uikit/actions/workflows/sync-to-voyra.yml/badge.svg)](https://github.com/liixnglinb/voyra-uikit/actions/workflows/sync-to-voyra.yml)
+[![Sync to Voyra](https://github.com/liixnglinb/Voyra-uikit/actions/workflows/sync-to-voyra.yml/badge.svg)](https://github.com/liixnglinb/Voyra-uikit/actions/workflows/sync-to-voyra.yml)
 ![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-38BDF8?logo=tailwindcss&logoColor=white)
@@ -61,7 +61,7 @@ src/
 
 ```mermaid
 flowchart LR
-  A["本仓库<br/>voyra-uikit"] -->|git push| B["GitHub Actions"]
+  A["本仓库<br/>Voyra-uikit"] -->|git push| B["GitHub Actions"]
   B -->|同步页面与组件数据| C["Voyra 主仓库"]
   C -->|自动构建| D["Cloudflare Pages"]
   D --> E["lxlrwxs.top/#/uikit"]
